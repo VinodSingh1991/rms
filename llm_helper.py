@@ -9,6 +9,8 @@ apiKey = os.getenv("OPENAI_API_KEY")
 end_point = os.getenv("LANGCHAIN_ENDPOINT")
 project = os.getenv("LANGCHAIN_PROJECT")
 temperature = 0.5
+_BASE_URL = os.getenv("URL_LLAMA")
+from litellm import completion
 
 # Ensure API key is set
 if not apiKey:
@@ -36,3 +38,21 @@ def get_llm_modal_with_tools(tools):
         ValueError("you must be pass tool")
     
     return llm.bind_tools(tools)
+
+
+def get_ollama_modal_with_tools(tools=None):
+    if tools is None:
+        raise ValueError("You must pass at least one tool.")
+    
+    # Define a custom wrapper for tool binding with Ollama completion
+    def ollama_with_tools(prompt, **kwargs):
+        response = ollama_completion()(prompt, **kwargs)  # Call the ollama model
+        
+        # After receiving response, run through the provided tools (simulating "binding tools")
+        for tool in tools:
+            if hasattr(tool, 'process'):  # Assuming tools have a process method
+                response = tool.process(response)
+        
+        return response
+    
+    return ollama_with_tools

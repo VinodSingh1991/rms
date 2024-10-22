@@ -1,29 +1,20 @@
 import sqlite3
 import os
-from typing import Annotated, Literal
-from langchain_core.messages import HumanMessage
+from typing import Annotated
 from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode
-import pandas as pd
 from llm_helper import get_llm_modal_with_tools
-from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.graph.message import AnyMessage, add_messages
 from langchain.prompts import ChatPromptTemplate
-
 from typing_extensions import TypedDict
-from langchain_core.messages import ToolMessage
-from langchain_core.runnables import RunnableLambda
+from langgraph.prebuilt import ToolNode, tools_condition
+from testing.response_helper import convert_response_to_modal
 
-from langgraph.prebuilt import ToolNode
-from langgraph.prebuilt import tools_condition
-
-# DB path
-db_path = os.path.join('databse-sqllite/Lead.sqlite')
-
-# #print("Database Path:", execute_query("SELECT * FROM Leads"))
-# # Tool Definitions with SQLite Queries
 import logging
 
 # Initialize logging (this can be configured more globally)
@@ -31,19 +22,32 @@ logging.basicConfig(level=logging.INFO)
 
 @tool
 def get_all_lead_details(ss: str):
+    """
+        Fetch all lead details from the Leads table in the database.
+        
+        Args:
+            db_file (str): The path to the SQLite database file.
+
+        Returns:
+            The tool must return the output in the following structured JSON format:
+
+            {
+            "status": "success",  # Fixed key for status
+            "response_type": "table",      # Fixed key for type
+            "total_no_of_leads": <int>,  # Total number of leads retrieved
+            "acid_columns": <list of column names>,  # List of column names in the table
+            "acid_rows": <list of row dictionaries>  # List of row dictionaries, each representing a lead
+            "acid_update_message_of_ai": "Here is The List of Complete Leads"
+            }
+
+            If no leads are found, the response should be:
+
+            {
+            "status": "error",  # Fixed key for status
+            "message": "No Result found from your tools"  # Error message
+            }
+        """
     
-    """
-    Fetch all lead details from the Leads table in the database.
-
-    This function retrieves all the leads available in the database.
-
-    Args:
-        db_file (str): The path to the SQLite database file.
-
-    Returns:
-        List[Dict]: A list of dictionaries representing all leads,
-        where each dictionary contains column names as keys.
-    """
     conn = None
     try:
         # Connect to the SQLite database
@@ -53,18 +57,26 @@ def get_all_lead_details(ss: str):
         logging.info("Connected to database")
 
         # Execute query to fetch all rows from Leads table
-        query = 'SELECT * FROM Leads'
+        query = 'SELECT * FROM Leads LIMIT 1'
         logging.info("Executing query: %s", query)
         cursor.execute(query)
         
         # Fetch all rows and extract column names
         rows = cursor.fetchall()
         column_names = [column[0] for column in cursor.description]
+        #results = convert_response_to_modal("table", {"rows": rows, "columns": column_names})
         results = [dict(zip(column_names, row)) for row in rows]
         
+        output = {
+            "acid_result_type": "acid_table",
+            "total_no_of_leads": len(rows),
+            "acid_columns": column_names,
+            "acid_rows": results,
+            "acid_update_message_of_ai": "Here is The List of Complete Leads"
+        }  
         logging.info("Query executed successfully, fetched %d rows", len(rows))
         
-        return results
+        return output
     
     except sqlite3.Error as e:
         logging.error("SQLite error: %s", e)
@@ -133,14 +145,12 @@ user_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", 
          "You are the database assistant for a lead management system. "
-         "Use the provided tools to search for lead details, top leads, follow-up information, and priority leads. "
-         "Be persistent when searching. If a search returns no results, provide a message to the user. `No Result found from your tools`"
-         ### Important Note:
-        "You are **prohibited from generating any additional information beyond what these tools provide**. If no data is available, respond with `No Result found from your tools`."
-
-         ),
-       
-       
+         "Your task is to use the provided tools to search for lead details, top leads, follow-up information, and priority leads. "
+         "You must return responses in the structured format specified in the tool descriptions. "
+         "Each tool will have its own expected output format that you must follow precisely. "
+         "The output must always include the following keys: status, response_type, and the relevant data fields depending on the tool used."
+         
+        ),
         ("placeholder", "{messages}")
     ]
 )
@@ -182,9 +192,9 @@ config = {
 
 _printed = set()
 
-events = app.stream(
-        {"messages": ("user", "what is list of leads")}, config, stream_mode="values"
-)
+# events = app.stream(
+#         {"messages": ("user", "what is list of leads")}, config, stream_mode="values"
+# )
 
 
 def _print_event(event: dict, _printed: set, max_length=1500):
@@ -202,5 +212,21 @@ def _print_event(event: dict, _printed: set, max_length=1500):
             print(msg_repr)
             _printed.add(message.id)
             
-for event in events:
-    _print_event(event, _printed)
+# for event in events:
+#     _print_event(event, _printed)
+
+def start_app(msg):
+    # print("msg", msg)
+    
+    # return msg
+    messages = app.invoke({"messages": [("user", msg.message)]}, config)
+    message = messages.get("messages")
+    if message:
+        if isinstance(message, list):
+                message = message[-1]
+    
+    return message
+
+# result = start_app()
+
+# print("events", result)
